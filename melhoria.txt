@@ -1,0 +1,305 @@
+estes são os pontos que eu alteraria, mantendo 100% da funcionalidade e sem perder nenhum evento em tempo real.
+
+1) dedupeById()
+DE
+function dedupeById<T extends { id: string }>(items: T[], next: T | undefined | null) {
+  if (!next) return items;
+  if (items.some((item) => item.id === next.id)) return items;
+  return [...items, next];
+}
+PARA
+function dedupeById<T extends { id: string }>(
+    items: T[],
+    next: T | undefined | null
+) {
+    if (!next) return items;
+
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].id === next.id) {
+            return items;
+        }
+    }
+
+    const copy = items.slice();
+    copy.push(next);
+
+    return copy;
+}
+
+Motivo
+
+Evita criar callbacks (some) e reduz pressão no GC.
+
+2) dedupeItems()
+DE
+return items.reduce(...)
+PARA
+const ids = new Set<string>();
+const result: T[] = [];
+
+for (const item of items) {
+
+    if (ids.has(item.id)) continue;
+
+    ids.add(item.id);
+
+    result.push(item);
+
+}
+
+return result;
+
+Motivo
+
+O algoritmo atual é O(n²).
+
+Esse vira O(n).
+
+3) handleEvent()
+
+Hoje:
+
+setAvailableDates(...)
+
+está dentro do
+
+setState(...)
+
+Isso força dois renders.
+
+Mover para fora.
+
+DE
+setState(() => {
+
+    ...
+
+    setAvailableDates(...)
+
+})
+PARA
+const newDate = context.date;
+
+setAvailableDates(previous => {
+
+    if (previous.includes(newDate))
+        return previous;
+
+    return [...previous, newDate].sort(...);
+
+});
+
+setState(...)
+4) buildRecord()
+
+Hoje:
+
+const end = new Date(...)
+
+é criado toda peça.
+
+Troque por
+
+const endDate = new Date(endedAt);
+
+e reutilize.
+
+5) computeMetrics()
+
+Hoje:
+
+computeMetrics(
+    filterCycles(...),
+    filterPieces(...)
+)
+
+Isso percorre tudo.
+
+Criar cache.
+
+adicionar
+const metricsCache = useRef(
+    new Map<string, Metrics>()
+);
+
+Depois
+
+DE
+const getMetrics = useCallback(...)
+PARA
+const getMetrics = useCallback(
+
+(date, shift)=>{
+
+    const key = date+"-"+shift;
+
+    const cached = metricsCache.current.get(key);
+
+    if(cached)
+        return cached;
+
+    const value = computeMetrics(
+        filterCycles(date,shift),
+        filterPieces(date,shift)
+    );
+
+    metricsCache.current.set(key,value);
+
+    return value;
+
+},
+[filterCycles,filterPieces]
+);
+
+Depois de cada evento
+
+metricsCache.current.clear();
+6) pendingEvents
+
+Hoje
+
+pendingEvents.forEach(handleEvent)
+
+Troque
+
+PARA
+for(const event of pendingEvents){
+
+    handleEvent(event);
+
+}
+
+Evita callback.
+
+7) filterCycles()
+
+Hoje
+
+state.cycles.filter(...)
+
+Toda render.
+
+Trocar por
+
+const cycleIndex = useMemo(()=>{
+
+    const map=new Map();
+
+    ...
+
+},[state.cycles]);
+
+Depois
+
+cyclesFor()
+
+
+vira apenas
+
+return cycleIndex.get(key) ?? [];
+
+Esse é um dos maiores ganhos.
+
+8) filterPieces()
+
+Mesmo processo.
+
+Criar índice.
+
+Não usar
+
+filter()
+
+toda hora.
+
+9) setNow()
+
+Hoje
+
+2000ms
+
+Pode manter.
+
+Não mudaria.
+
+10) applySnapshot()
+
+Hoje
+
+Array.from(new Set(...))
+
+Trocar por
+
+const dates=new Set(...)
+
+const availableDates=[...dates].sort(...)
+
+Menos objetos.
+
+11) handleEvent()
+
+Hoje
+
+const nextCycles =
+
+Sempre cria novo array.
+
+Trocar para
+
+if(cycle){
+
+    if(!previous.cycles.some(...)){
+
+        nextCycles=[
+            ...previous.cycles,
+            cycle
+        ];
+
+    }else{
+
+        nextCycles=previous.cycles;
+
+    }
+
+}
+12) useMemo()
+
+Hoje
+
+value={
+...
+}
+
+Sempre muda.
+
+Trocar para
+
+const value=useMemo(...)
+
+com dependências mínimas.
+
+O maior problema do arquivo
+
+O maior gargalo não é o WebSocket.
+
+É este trecho:
+
+computeMetrics(
+    filterCycles(...),
+    filterPieces(...)
+)
+
+Em uma fábrica produzindo milhares de peças, cada evento recebido faz o frontend percorrer novamente todas as peças e todos os ciclos para recalcular indicadores. Com dezenas de clientes conectados, isso multiplica o trabalho em cada navegador.
+
+O que eu faria (sem alterar a premissa do projeto)
+
+Eu não removeria nenhum dado em tempo real.
+
+Eu manteria exatamente o mesmo comportamento funcional, mas mudaria a estratégia:
+
+índices (Map) para ciclos e peças por data/turno;
+cache de métricas invalidado apenas quando chega um novo evento;
+atualização incremental dos índices em vez de filtrar arrays inteiros;
+redução de cópias desnecessárias de arrays.
+
+Essas mudanças preservam todos os eventos, todas as peças e todos os ciclos exibidos hoje, mas reduzem significativamente o custo de processamento por evento.
